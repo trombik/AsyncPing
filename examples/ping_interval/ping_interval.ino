@@ -1,4 +1,11 @@
+#ifdef ARDUINO_ARCH_ESP32
+#include <WiFi.h>
+#endif
+
+#ifdef ARDUINO_ARCH_ESP8266
 #include <ESP8266WiFi.h>
+#endif
+
 #include "AsyncPing.h"
 #include "Ticker.h"
 

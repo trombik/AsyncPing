@@ -1,6 +1,22 @@
 #include <Esp.h>
 #include "AsyncPing.h"
+
+#ifdef ARDUINO_ARCH_ESP32
+#include <WiFi.h>
+#endif
+
+#ifdef ARDUINO_ARCH_ESP8266
 #include "ESP8266WiFi.h"
+#endif
+
+/* XXX use __typeof__ instead of typeof becaus -std=c++11 is used in ESP8266
+ * build.
+ *
+ * https://gcc.gnu.org/onlinedocs/gcc/Typeof.html
+ */
+#ifdef ARDUINO_ARCH_ESP8266
+#define typeof(x) __typeof__(x)
+#endif
 
 extern "C" {
   #include <lwip/icmp.h>
@@ -16,13 +32,11 @@ AsyncPing::AsyncPing() {
   _on_recv = NULL;
   _on_sent = NULL;
   count_down = 0;
-  memset(&_timer, 0, sizeof(_timer));
-  memset(&_timer_recv, 0, sizeof(_timer_recv));
 }
 
 AsyncPing::~AsyncPing() {
-  os_timer_disarm(&_timer);
-  os_timer_disarm(&_timer_recv);
+  _timer.detach();
+  _timer_recv.detach();
   done();
 }
 
@@ -49,7 +63,16 @@ bool AsyncPing::begin(const IPAddress &addr,u8_t count,u32_t timeout) {
     raw_recv(ping_pcb, _s_ping_recv, reinterpret_cast<void*>(this));
     raw_bind(ping_pcb, IP_ADDR_ANY);
   }
+
+#ifdef ARDUINO_ARCH_ESP8266
+  /* old esp8266/arduino does not support IPv6. but to use ICMP on ESP32,
+   * IPv6-ready ip_addr_t must be used.
+   */
   ping_target.addr = addr;
+#else
+  ping_target.type = IPADDR_TYPE_V4;
+  ping_target.u_addr.ip4.addr = addr;
+#endif
   ping_sent = sys_now(); // micro? system_get_time();
   send_packet();
   return true;
@@ -67,9 +90,11 @@ void AsyncPing::send_packet() {
   ping_send(ping_pcb, &ping_target);
   _response.total_sent++;
   count_down--;
-  os_timer_disarm(&_timer);
-  os_timer_setfn(&_timer, reinterpret_cast<os_timer_func_t*>(_s_timer), reinterpret_cast<void*>(this));
-  os_timer_arm(&_timer, _response.timeout, 0);
+  _timer.detach();
+  _timer.attach<typeof(this)>(
+          1.0,
+          [](typeof(this) p){ p->_s_timer(p); },
+          this);
 }
 
 void AsyncPing::cancel() {
@@ -77,7 +102,7 @@ void AsyncPing::cancel() {
 }
 
 void AsyncPing::timer() {
-  os_timer_disarm(&_timer);
+  _timer.detach();
   if(!_response.answer)
     if(_on_recv)
       if(_on_recv(_response))
@@ -150,13 +175,23 @@ u8_t AsyncPing::ping_recv (raw_pcb*pcb, pbuf*p, C_IP_ADDR ip_addr_t *addr) {
       _response.ttl = ip->_ttl;
       _response.answer = true;
       _response.total_recv++;
+#ifdef ARDUINO_ARCH_ESP8266
       C_IP_ADDR ip_addr_t *unused_ipaddr;
       if (_response.mac == NULL)
         etharp_find_addr(NULL, addr, &_response.mac, &unused_ipaddr);
+#else
+      C_IP_ADDR ip4_addr_t *unused_ipaddr;
+      if (_response.mac == NULL) {
+        ip4_addr_t ip4 = addr->u_addr.ip4;
+        etharp_find_addr(NULL, &ip4, &_response.mac, &unused_ipaddr);
+      }
+#endif
       if (_on_recv){
-        os_timer_disarm(&_timer_recv);
-        os_timer_setfn(&_timer_recv, reinterpret_cast<os_timer_func_t*>(_s_timer_recv), reinterpret_cast<void*>(this));
-        os_timer_arm(&_timer_recv, 1, 0);
+        _timer_recv.detach();
+        _timer.attach<typeof(this)>(
+          1.0,
+          [](typeof(this) p){ p->_s_timer_recv(p); },
+          this);
       }
       pbuf_free(p);
       return 1; /* eat the packet */
@@ -175,7 +210,7 @@ void AsyncPing::_s_timer (void*arg){
 }
 void AsyncPing::_s_timer_recv (void*arg){
   AsyncPing &host = *reinterpret_cast<AsyncPing*>(arg);
-  os_timer_disarm(&host._timer_recv);
+  host._timer_recv.detach();
   if (host._on_recv)
     if(host._on_recv(host._response))
       host.cancel();

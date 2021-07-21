@@ -1,11 +1,15 @@
 #include "IPAddress.h"
 #include <functional>
 #include "core_version.h"
+#include "Ticker.h"
 
 extern "C" {
   #include <lwip/raw.h>
   #include <netif/etharp.h>
+
+#ifdef ARDUINO_ARCH_ESP8266
   #include <user_interface.h>
+#endif
 }
 
 class AsyncPingResponse{
@@ -41,11 +45,11 @@ public:
 private:
   AsyncPingResponse _response;
 
-  os_timer_t _timer;
+  Ticker _timer;
   static void _s_timer (void*arg);
   void  timer();
 
-  os_timer_t _timer_recv;
+  Ticker _timer_recv;
   static void _s_timer_recv (void*arg);
 
   ip_addr_t ping_target;
